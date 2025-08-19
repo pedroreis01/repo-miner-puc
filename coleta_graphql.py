@@ -24,7 +24,7 @@ HEADERS = {
 }
 OUTPUT_CSV_FILE = "repositorios_graphql_completo.csv"
 REPOS_PER_PAGE = 100
-PAGES_TO_FETCH = 1
+PAGES_TO_FETCH = 10
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 

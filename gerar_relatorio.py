@@ -1,363 +1,394 @@
+# gerar_relatorio.py
 import pandas as pd
-import io
-import base64
 import matplotlib.pyplot as plt
 import seaborn as sns
-import locale
+import numpy as np
+import base64
+from io import BytesIO
+import webbrowser
+import os
 
+# --- CONFIGURAÇÕES ---
+ARQUIVO_CSV = "repositorios_graphql_completo.csv"
+ARQUIVO_HTML = "relatorio_completo.html"
+ARQUIVO_PDF = "relatorio_completo.pdf"
+NOMES_ALUNOS = "Pedro Reis e Gabriel Fernandes"
+TITULO_RELATORIO = "Relatório de Análise de Repositórios Populares do GitHub"
 
-def df_to_html_table(df, title):
-    """Converte um DataFrame do pandas em uma tabela HTML estilizada."""
-    # Formata os números no DataFrame para o padrão brasileiro
-    df_formatted = df.copy()
-    for col in df_formatted.columns:
-        if pd.api.types.is_numeric_dtype(df_formatted[col]):
-            df_formatted[col] = df_formatted[col].apply(
-                lambda x: (
-                    locale.format_string("%.2f", x, grouping=True)
-                    if pd.notnull(x)
-                    else ""
-                )
-            )
+# --- NOVAS SEÇÕES DE TEXTO ---
 
-    return f"""
-    <div class="table-container">
-        <h3>{title}</h3>
-        {df_formatted.to_html(classes='styled-table', index=True, float_format='{:.2f}'.format)}
+INTRODUCAO_TEXTO = """
+    <div class="rq-section">
+        <h3><i class="fas fa-book-open mr-2"></i>Introdução</h3>
+        <p>Este estudo tem como objetivo analisar as características comuns entre os 1.000 repositórios mais populares do GitHub, mensurados pelo número de estrelas, a fim de entender os padrões que podem levar ao sucesso de um projeto de código aberto.</p>
+        <p>Para guiar nossa análise, formulamos as seguintes hipóteses informais para cada questão de pesquisa (RQ):</p>
+        <ul>
+            <li><b>RQ01 (Idade):</b> Esperamos que sistemas populares sejam maduros, com vários anos de desenvolvimento contínuo.</li>
+            <li><b>RQ02 (Contribuição Externa):</b> Acreditamos que projetos de sucesso recebem um volume muito alto de contribuições externas (Pull Requests).</li>
+            <li><b>RQ03 (Releases):</b> Nossa hipótese é que projetos populares lançam novas versões (releases) com boa frequência para entregar valor aos usuários.</li>
+            <li><b>RQ04 (Atualização):</b> Esperamos que esses sistemas sejam atualizados constantemente, com novas contribuições de código (pushes) ocorrendo quase diariamente.</li>
+            <li><b>RQ05 (Linguagens):</b> Acreditamos que as linguagens mais populares na indústria, como o ecossistema JavaScript (incluindo TypeScript) e Python, dominarão a lista.</li>
+            <li><b>RQ06 (Issues):</b> Projetos populares devem ter uma boa gestão de issues, resultando em uma alta porcentagem de issues fechadas.</li>
+            <li><b>RQ07 (Bônus):</b> Acreditamos que as métricas de atividade (contribuições, releases e atualizações) podem variar significativamente entre as diferentes comunidades de linguagens de programação.</li>
+        </ul>
     </div>
+"""
+
+METODOLOGIA_TEXTO = """
+    <div class="rq-section">
+        <h3><i class="fas fa-cogs mr-2"></i>Metodologia</h3>
+        <p>Para responder às questões de pesquisa, adotamos a seguinte metodologia, dividida em três etapas principais:</p>
+        <ol>
+            <li><b>Coleta de Dados:</b>
+                <ul>
+                    <li>Utilizamos um script em Python para interagir com a <strong>API GraphQL do GitHub (v4)</strong>.</li>
+                    <li>A busca foi configurada para retornar os 1.000 repositórios com o maior número de estrelas (<code>query: "stars:>=1 sort:stars-desc"</code>).</li>
+                    <li>Para evitar sobrecarga na API e erros de timeout, a coleta foi dividida em duas fases: uma busca inicial "leve" para obter a lista dos repositórios e, em seguida, requisições individuais para cada um a fim de obter métricas detalhadas.</li>
+                    <li>As métricas coletadas para cada repositório foram: nome, estrelas, data de criação, data do último push, linguagem primária, contagem de pull requests aceitas, contagem de releases e contagens de issues totais e fechadas.</li>
+                    <li>Os dados brutos foram salvos em um arquivo no formato <strong>CSV</strong> (<code>repositorios_graphql_completo.csv</code>).</li>
+                </ul>
+            </li>
+            <li><b>Processamento e Análise de Dados:</b>
+                <ul>
+                    <li>O arquivo CSV foi carregado em um DataFrame utilizando a biblioteca <strong>Pandas</strong>.</li>
+                    <li>Novas métricas foram calculadas a partir dos dados brutos, como a idade do repositório em dias, os dias desde o último push e a razão de issues fechadas.</li>
+                    <li>A análise focou no cálculo de valores de tendência central, especificamente a <strong>mediana</strong>, por ser uma medida mais robusta a outliers em distribuições assimétricas, comuns em dados de popularidade. Para dados categóricos (linguagens), realizamos a contagem de frequência.</li>
+                </ul>
+            </li>
+            <li><b>Visualização e Geração do Relatório:</b>
+                <ul>
+                    <li>Utilizamos as bibliotecas <strong>Matplotlib</strong> e <strong>Seaborn</strong> para gerar visualizações gráficas (histogramas e gráficos de barras) para cada questão de pesquisa.</li>
+                    <li>Um script final em Python foi responsável por consolidar todas as análises, textos e gráficos em um único relatório no formato <strong>HTML</strong>, que foi posteriormente convertido para <strong>PDF</strong>.</li>
+                </ul>
+            </li>
+        </ol>
+    </div>
+"""
+
+
+# --- FUNÇÕES DE ANÁLISE E PLOTAGEM ---
+
+
+def analisar_rq01(df):
+    """Analisa a idade dos repositórios (RQ01)."""
+    print("Analisando RQ01: Idade dos repositórios...")
+    mediana_idade = df["idade_dias"].median()
+    mediana_anos = mediana_idade / 365.25
+
+    texto = f"""
+    <p><b>Análise:</b> A mediana da idade dos 1.000 repositórios mais populares é de <b>{mediana_idade:.0f} dias</b> (aproximadamente <b>{mediana_anos:.1f} anos</b>).</p>
+    <p><b>Discussão:</b> O valor mediano de quase {mediana_anos:.1f} anos confirma a hipótese de que a maioria dos repositórios populares não é recente, possuindo um tempo considerável de existência e desenvolvimento.</p>
     """
 
+    plt.figure(figsize=(10, 6))
+    sns.histplot(df["idade_dias"], bins=50, kde=True)
+    plt.title("RQ01: Distribuição da Idade dos Repositórios (em dias)", fontsize=16)
+    plt.xlabel("Idade (dias)", fontsize=12)
+    plt.ylabel("Número de Repositórios", fontsize=12)
+    plt.axvline(
+        mediana_idade,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mediana: {mediana_idade:.0f} dias",
+    )
+    plt.legend()
+    plt.grid(axis="y", alpha=0.75)
 
-def plot_to_base64_html(plot_function):
-    """Executa uma função de plotagem e retorna a imagem como uma tag HTML base64."""
-    img_buffer = io.BytesIO()
-    plot_function(img_buffer)
-    img_buffer.seek(0)
-    img_base64 = base64.b64encode(img_buffer.read()).decode("utf-8")
-    img_buffer.close()
-    return f'<img src="data:image/png;base64,{img_base64}" alt="Gráfico da Análise">'
+    return texto, plot_to_base64()
 
 
-def create_report(df):
-    """Gera o conteúdo HTML completo do relatório a partir do DataFrame."""
+def analisar_rq02(df):
+    """Analisa o total de pull requests (RQ02)."""
+    print("Analisando RQ02: Contribuição externa (Pull Requests)...")
+    mediana_prs = df["total_pull_requests_aceitas"].median()
 
-    # --- Análises para cada RQ ---
+    texto = f"""
+    <p><b>Análise:</b> A mediana do total de pull requests aceitas é de <b>{mediana_prs:.0f}</b>.</p>
+    <p><b>Discussão:</b> Este valor mediano indica um volume significativo e constante de contribuições da comunidade. O gráfico de distribuição (boxplot) mostra que, embora a mediana seja alta, existem repositórios (outliers) que recebem um volume de contribuições ordens de magnitude maior, como frameworks e bibliotecas de uso massivo.</p>
+    """
 
-    # RQ1: Idade do repositório
-    rq1_stats = df["idade_dias"].describe().to_frame().T
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(x=df["total_pull_requests_aceitas"])
+    plt.title("RQ02: Distribuição do Total de Pull Requests Aceitas", fontsize=16)
+    plt.xlabel("Total de Pull Requests (escala log)", fontsize=12)
+    plt.xscale("log")
+    plt.grid(axis="x", alpha=0.75)
 
-    def plot_rq1(buf):
-        plt.figure(figsize=(10, 6))
-        sns.histplot(df["idade_dias"], bins=30, kde=True)
-        plt.title("RQ1: Distribuição da Idade dos Repositórios (em dias)")
-        plt.xlabel("Idade (dias)")
-        plt.ylabel("Frequência (Nº de Repositórios)")
-        mean_val = df["idade_dias"].mean()
-        plt.axvline(
-            mean_val,
-            color="red",
-            linestyle="--",
-            label=f'Média: {locale.format_string("%.0f", mean_val, grouping=True)}',
+    return texto, plot_to_base64()
+
+
+def analisar_rq03(df):
+    """Analisa o total de releases (RQ03)."""
+    print("Analisando RQ03: Frequência de releases...")
+    mediana_releases = df["total_releases"].median()
+
+    texto = f"""
+    <p><b>Análise:</b> A mediana do total de releases é de <b>{mediana_releases:.0f}</b>.</p>
+    <p><b>Discussão:</b> A mediana sugere que a prática de versionamento formal via releases é bem estabelecida entre os projetos populares. Uma mediana de {mediana_releases:.0f} releases ao longo da vida do projeto indica um ciclo de desenvolvimento maduro e organizado.</p>
+    """
+
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(x=df["total_releases"])
+    plt.title("RQ03: Distribuição do Total de Releases", fontsize=16)
+    plt.xlabel("Total de Releases (escala log)", fontsize=12)
+    plt.xscale("log")
+    plt.grid(axis="x", alpha=0.75)
+
+    return texto, plot_to_base64()
+
+
+def analisar_rq04(df):
+    """Analisa a frequência de atualização (RQ04)."""
+    print("Analisando RQ04: Frequência de atualização...")
+    mediana_atualizacao = df["dias_desde_ultimo_push"].median()
+
+    texto = f"""
+    <p><b>Análise:</b> A mediana de dias desde a última atualização é de <b>{mediana_atualizacao:.0f} dias</b>.</p>
+    <p><b>Discussão:</b> Uma mediana de {mediana_atualizacao:.0f} dias confirma que são projetos extremamente ativos, com metade dos repositórios tendo recebido código novo neste curto período.</p>
+    """
+
+    dados_filtrados = df[df["dias_desde_ultimo_push"] < 365]
+    plt.figure(figsize=(10, 6))
+    sns.histplot(dados_filtrados["dias_desde_ultimo_push"], bins=50, kde=True)
+    plt.title(
+        "RQ04: Distribuição de Dias Desde a Última Atualização (no último ano)",
+        fontsize=16,
+    )
+    plt.xlabel("Dias desde o último push", fontsize=12)
+    plt.ylabel("Número de Repositórios", fontsize=12)
+    plt.axvline(
+        mediana_atualizacao,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mediana: {mediana_atualizacao:.0f} dias",
+    )
+    plt.legend()
+    plt.grid(axis="y", alpha=0.75)
+
+    return texto, plot_to_base64()
+
+
+def analisar_rq05(df):
+    """Analisa as linguagens primárias (RQ05)."""
+    print("Analisando RQ05: Linguagens primárias...")
+    contagem_linguagens = df["linguagem_primaria"].value_counts().nlargest(15)
+    tabela_html = contagem_linguagens.to_frame().to_html(
+        classes="table table-striped text-center"
+    )
+
+    texto = f"""
+    <p><b>Análise:</b> A contagem das 15 linguagens primárias mais frequentes é apresentada abaixo.</p>
+    <p><b>Discussão:</b> Conforme esperado, o ecossistema JavaScript e Python são dominantes. A presença de Go, Rust e Kotlin reflete tendências modernas no desenvolvimento de software.</p>
+    <div style="display: flex; justify-content: center;"><div style="margin-right: 50px;">
+    <h4>Contagem de Repositórios por Linguagem (Top 15)</h4>{tabela_html}</div></div>
+    """
+
+    plt.figure(figsize=(12, 8))
+    sns.barplot(
+        x=contagem_linguagens.values,
+        y=contagem_linguagens.index,
+        palette="viridis",
+        orient="h",
+    )
+    plt.title("RQ05: Top 15 Linguagens Primárias Mais Populares", fontsize=16)
+    plt.xlabel("Número de Repositórios", fontsize=12)
+    plt.ylabel("Linguagem", fontsize=12)
+    plt.tight_layout()
+
+    return texto, plot_to_base64()
+
+
+def analisar_rq06(df):
+    """Analisa a razão de issues fechadas (RQ06)."""
+    print("Analisando RQ06: Razão de issues fechadas...")
+    mediana_razao_issues = df["razao_issues_fechadas"].median()
+
+    texto = f"""
+    <p><b>Análise:</b> A mediana da razão entre issues fechadas e o total de issues é de <b>{mediana_razao_issues:.2f}</b> (ou <b>{mediana_razao_issues*100:.0f}%</b>).</p>
+    <p><b>Discussão:</b> Uma mediana de {mediana_razao_issues*100:.0f}% é um indicador muito forte de saúde e boa manutenção do projeto. Mostra que a maioria dos projetos populares consegue gerenciar e resolver a grande maioria dos problemas e sugestões que recebem da comunidade.</p>
+    """
+
+    plt.figure(figsize=(10, 6))
+    sns.histplot(df["razao_issues_fechadas"], bins=40, kde=True)
+    plt.title("RQ06: Distribuição da Razão de Issues Fechadas", fontsize=16)
+    plt.xlabel("Razão (Issues Fechadas / Total de Issues)", fontsize=12)
+    plt.ylabel("Número de Repositórios", fontsize=12)
+    plt.axvline(
+        mediana_razao_issues,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mediana: {mediana_razao_issues:.2f}",
+    )
+    plt.legend()
+    plt.grid(axis="y", alpha=0.75)
+
+    return texto, plot_to_base64()
+
+
+def analisar_rq07(df):
+    """Analisa métricas por linguagem (RQ07 - Bônus)."""
+    print("Analisando RQ07 (Bônus): Métricas por linguagem...")
+
+    top_10_languages = df["linguagem_primaria"].value_counts().nlargest(10).index
+    df_top_lang = df[df["linguagem_primaria"].isin(top_10_languages)]
+
+    grouped_stats = (
+        df_top_lang.groupby("linguagem_primaria")
+        .agg(
+            {
+                "total_pull_requests_aceitas": "median",
+                "total_releases": "median",
+                "dias_desde_ultimo_push": "median",
+            }
         )
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(buf, format="png")
-        plt.close()
+        .sort_values(by="total_pull_requests_aceitas", ascending=False)
+    )
 
-    # RQ2: Total de pull requests aceitas
-    rq2_stats = df["total_pull_requests_aceitas"].describe().to_frame().T
+    texto = f"""
+    <p><b>Análise:</b> O gráfico abaixo compara a mediana de Pull Requests, Releases e Dias desde o Último Push para as 10 linguagens mais populares no dataset.</p>
+    <p><b>Discussão:</b> A análise revela nuances interessantes. Por exemplo, linguagens como Rust e Go, apesar de modernas, mostram um alto volume mediano de contribuições, refletindo comunidades vibrantes. A frequência de atualização (menor número de dias desde o último push) é consistentemente baixa em todas as linguagens populares, confirmando que todos são projetos ativos. As diferenças na mediana de releases podem indicar culturas de desenvolvimento distintas entre as comunidades de cada linguagem.</p>
+    """
 
-    def plot_rq2(buf):
-        plt.figure(figsize=(10, 6))
-        sns.histplot(df["total_pull_requests_aceitas"], bins=30, kde=True)
-        plt.title("RQ2: Distribuição de Pull Requests Aceitas")
-        plt.xlabel("Total de Pull Requests")
-        plt.ylabel("Frequência (Nº de Repositórios)")
-        mean_val = df["total_pull_requests_aceitas"].mean()
-        plt.axvline(
-            mean_val,
-            color="red",
-            linestyle="--",
-            label=f'Média: {locale.format_string("%.0f", mean_val, grouping=True)}',
-        )
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(buf, format="png")
-        plt.close()
+    fig, ax = plt.subplots(3, 1, figsize=(12, 18), sharex=True)
 
-    # RQ3: Total de releases
-    rq3_stats = df["total_releases"].describe().to_frame().T
+    sns.barplot(
+        x=grouped_stats.index,
+        y=grouped_stats["total_pull_requests_aceitas"],
+        ax=ax[0],
+        palette="plasma",
+    )
+    ax[0].set_title("Mediana de Pull Requests Aceitas por Linguagem", fontsize=14)
+    ax[0].set_ylabel("Mediana de PRs")
+    ax[0].set_yscale("log")
 
-    def plot_rq3(buf):
-        plt.figure(figsize=(10, 6))
-        sns.histplot(df["total_releases"], bins=30, kde=True)
-        plt.title("RQ3: Distribuição de Releases")
-        plt.xlabel("Total de Releases")
-        plt.ylabel("Frequência (Nº de Repositórios)")
-        mean_val = df["total_releases"].mean()
-        plt.axvline(
-            mean_val,
-            color="red",
-            linestyle="--",
-            label=f'Média: {locale.format_string("%.0f", mean_val, grouping=True)}',
-        )
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(buf, format="png")
-        plt.close()
+    sns.barplot(
+        x=grouped_stats.index,
+        y=grouped_stats["total_releases"],
+        ax=ax[1],
+        palette="viridis",
+    )
+    ax[1].set_title("Mediana de Releases por Linguagem", fontsize=14)
+    ax[1].set_ylabel("Mediana de Releases")
+    ax[1].set_yscale("log")
 
-    # RQ4: Dias desde o último push
-    rq4_stats = df["dias_desde_ultimo_push"].describe().to_frame().T
+    sns.barplot(
+        x=grouped_stats.index,
+        y=grouped_stats["dias_desde_ultimo_push"],
+        ax=ax[2],
+        palette="coolwarm",
+    )
+    ax[2].set_title("Mediana de Dias Desde o Último Push por Linguagem", fontsize=14)
+    ax[2].set_ylabel("Mediana de Dias")
 
-    def plot_rq4(buf):
-        plt.figure(figsize=(10, 6))
-        sns.histplot(df["dias_desde_ultimo_push"], bins=30, kde=True)
-        plt.title("RQ4: Distribuição de Dias Desde a Última Atualização")
-        plt.xlabel("Dias desde o último push")
-        plt.ylabel("Frequência (Nº de Repositórios)")
-        mean_val = df["dias_desde_ultimo_push"].mean()
-        plt.axvline(
-            mean_val,
-            color="red",
-            linestyle="--",
-            label=f'Média: {locale.format_string("%.0f", mean_val, grouping=True)}',
-        )
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(buf, format="png")
-        plt.close()
+    plt.xlabel("Linguagem Primária", fontsize=12)
+    plt.xticks(rotation=45, ha="right")
+    plt.suptitle("RQ07: Comparativo de Métricas por Linguagem", fontsize=20, y=0.95)
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
 
-    # RQ5: Linguagem primária
-    rq5_counts = df["linguagem_primaria"].value_counts().nlargest(10).reset_index()
-    rq5_counts.columns = ["linguagem", "contagem"]
+    return texto, plot_to_base64()
 
-    def plot_rq5(buf):
-        plt.figure(figsize=(12, 8))
-        sns.barplot(
-            x="contagem", y="linguagem", data=rq5_counts, palette="viridis", orient="h"
-        )
-        plt.title("RQ5: Top 10 Linguagens de Programação Principais")
-        plt.xlabel("Número de Repositórios")
-        plt.ylabel("Linguagem")
-        plt.tight_layout()
-        plt.savefig(buf, format="png")
-        plt.close()
 
-    # RQ6: Razão de issues fechadas
-    rq6_stats = df["razao_issues_fechadas"].describe().to_frame().T
+def plot_to_base64():
+    """Converte um plot do matplotlib para uma string base64 para embutir no HTML."""
+    buf = BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode("utf-8")
+    plt.close()
+    return f"data:image/png;base64,{img_base64}"
 
-    def plot_rq6(buf):
-        plt.figure(figsize=(10, 6))
-        sns.histplot(df["razao_issues_fechadas"], bins=20, kde=True)
-        plt.title("RQ6: Distribuição da Razão de Issues Fechadas")
-        plt.xlabel("Razão (Issues Fechadas / Issues Totais)")
-        plt.ylabel("Frequência (Nº de Repositórios)")
-        mean_val = df["razao_issues_fechadas"].mean()
-        plt.axvline(
-            mean_val,
-            color="red",
-            linestyle="--",
-            label=f'Média: {locale.format_string("%.2f", mean_val, grouping=True)}',
-        )
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(buf, format="png")
-        plt.close()
 
-    # --- Montagem do HTML ---
-
-    rq5_table_df = rq5_counts.set_index("linguagem")
-
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="pt-br">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Relatório de Análise de Repositórios do GitHub</title>
+def gerar_html(conteudo):
+    """Gera o arquivo HTML final a partir de uma lista de seções."""
+    html_template = f"""
+    <!DOCTYPE html><html lang="pt-br"><head>
+        <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{TITULO_RELATORIO}</title>
+        <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
         <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
-                line-height: 1.6;
-                color: #333;
-                background-color: #f4f4f4;
-                margin: 0;
-                padding: 20px;
-            }}
-            .container {{
-                max-width: 900px;
-                margin: auto;
-                background: #fff;
-                padding: 30px;
-                border-radius: 8px;
-                box-shadow: 0 0 15px rgba(0,0,0,0.1);
-            }}
-            h1, h2 {{
-                color: #0366d6;
-                border-bottom: 2px solid #eaecef;
-                padding-bottom: 10px;
-            }}
-            h3 {{
-                color: #24292e;
-            }}
-            .student-info {{
-                text-align: right;
-                margin-bottom: 25px;
-                font-size: 1em;
-                color: #586069;
-            }}
-            .rq-section {{
-                margin-bottom: 40px;
-                padding: 20px;
-                background-color: #f9f9f9;
-                border-left: 5px solid #0366d6;
-                border-radius: 5px;
-            }}
-            .metric {{
-                font-style: italic;
-                color: #586069;
-                margin-bottom: 20px;
-            }}
-            .styled-table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 15px;
-            }}
-            .styled-table th, .styled-table td {{
-                border: 1px solid #ddd;
-                padding: 10px;
-                text-align: left;
-            }}
-            .styled-table th {{
-                background-color: #0366d6;
-                color: white;
-            }}
-            .styled-table tr:nth-child(even) {{
-                background-color: #f2f2f2;
-            }}
-            .analysis-container {{
-                display: flex;
-                flex-wrap: wrap;
-                gap: 20px;
-                align-items: flex-start;
-            }}
-            .table-container {{
-                flex: 1;
-                min-width: 400px;
-            }}
-            img {{
-                max-width: 100%;
-                height: auto;
-                border-radius: 5px;
-                box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                margin-top: 20px;
-            }}
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 40px; background-color: #f8f9fa; line-height: 1.6; }}
+            .container {{ max-width: 1200px; }}
+            h1, h2, h3 {{ color: #343a40; }}
+            h1 {{ text-align: center; margin-bottom: 20px; font-weight: 300; }}
+            h2.autores {{ text-align: center; font-size: 1.2em; color: #6c757d; margin-bottom: 50px; font-weight: 400; }}
+            .rq-section {{ margin-bottom: 40px; padding: 30px; border: 1px solid #dee2e6; border-radius: 8px; background-color: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.05); }}
+            .rq-section h3 {{ border-bottom: 2px solid #007bff; padding-bottom: 10px; margin-bottom: 20px; color: #007bff; font-weight: 500;}}
+            .grafico {{ text-align: center; margin-top: 25px; padding: 15px; background-color: #f8f9fa; border-radius: 5px; }}
+            li {{ margin-bottom: 8px; }}
         </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Relatório Final: Características de Repositórios Populares</h1>
-            
-            <div class="student-info">
-                <p><strong>Alunos:</strong> Gabriel Fernandes e Pedro Reis</p>
-            </div>
-            
-            <div class="rq-section">
-                <h2>RQ 01. Sistemas populares são maduros/antigos?</h2>
-                <p class="metric">Métrica: idade do repositório (em dias)</p>
-                <div class="analysis-container">
-                    {df_to_html_table(rq1_stats, "Estatísticas Descritivas")}
-                    {plot_to_base64_html(plot_rq1)}
-                </div>
-            </div>
-
-            <div class="rq-section">
-                <h2>RQ 02. Sistemas populares recebem muita contribuição externa?</h2>
-                <p class="metric">Métrica: total de pull requests aceitas</p>
-                <div class="analysis-container">
-                    {df_to_html_table(rq2_stats, "Estatísticas Descritivas")}
-                    {plot_to_base64_html(plot_rq2)}
-                </div>
-            </div>
-
-            <div class="rq-section">
-                <h2>RQ 03. Sistemas populares lançam releases com frequência?</h2>
-                <p class="metric">Métrica: total de releases</p>
-                <div class="analysis-container">
-                    {df_to_html_table(rq3_stats, "Estatísticas Descritivas")}
-                    {plot_to_base64_html(plot_rq3)}
-                </div>
-            </div>
-
-            <div class="rq-section">
-                <h2>RQ 04. Sistemas populares são atualizados com frequência?</h2>
-                <p class="metric">Métrica: tempo até a última atualização (em dias)</p>
-                <div class="analysis-container">
-                    {df_to_html_table(rq4_stats, "Estatísticas Descritivas")}
-                    {plot_to_base64_html(plot_rq4)}
-                </div>
-            </div>
-
-            <div class="rq-section">
-                <h2>RQ 05. Sistemas populares são escritos nas linguagens mais populares?</h2>
-                <p class="metric">Métrica: linguagem primária de cada repositório</p>
-                <div class="analysis-container">
-                    {df_to_html_table(rq5_table_df, "Contagem das 10 Linguagens Mais Comuns")}
-                    {plot_to_base64_html(plot_rq5)}
-                </div>
-            </div>
-
-            <div class="rq-section">
-                <h2>RQ 06. Sistemas populares possuem um alto percentual de issues fechadas?</h2>
-                <p class="metric">Métrica: razão entre número de issues fechadas pelo total de issues</p>
-                <div class="analysis-container">
-                    {df_to_html_table(rq6_stats, "Estatísticas Descritivas")}
-                    {plot_to_base64_html(plot_rq6)}
-                </div>
-            </div>
+    </head><body><div class="container">
+        <h1>{TITULO_RELATORIO}</h1>
+        <h2 class="autores">Alunos: {NOMES_ALUNOS}</h2>
+        
+        {INTRODUCAO_TEXTO}
+        {METODOLOGIA_TEXTO}
+        
+        <div class="rq-section">
+            <h3><i class="fas fa-chart-bar mr-2"></i>Resultados e Discussões</h3>
+            <p>A seguir, apresentamos os resultados detalhados para cada questão de pesquisa.</p>
         </div>
-    </body>
-    </html>
+
+        {"".join(conteudo)}
+        
+    </div></body></html>
     """
-    return html_content
+    with open(ARQUIVO_HTML, "w", encoding="utf-8") as f:
+        f.write(html_template)
+    print(f"\\nRelatório '{ARQUIVO_HTML}' gerado com sucesso!")
 
 
-# --- Bloco de Execução Principal ---
+# --- BLOCO DE EXECUÇÃO PRINCIPAL ---
 if __name__ == "__main__":
     try:
-        # Tenta definir o locale para o Brasil.
-        # Necessário para formatar números com vírgula decimal.
-        try:
-            locale.setlocale(locale.LC_ALL, "pt_BR.UTF-8")
-        except locale.Error:
-            print(
-                "Aviso: Locale 'pt_BR.UTF-8' não encontrado. Usando o locale padrão do sistema."
-            )
-            # Prossegue com o locale padrão, a formatação pode não ser a ideal.
-
-        # Carregar os dados do arquivo CSV
-        df_repos = pd.read_csv("repositorios_graphql_completo.csv")
-        print("Arquivo CSV 'repositorios_graphql_completo.csv' carregado com sucesso.")
-
-        # Configurar o estilo dos gráficos
-        sns.set_style("whitegrid")
-
-        # Gerar o conteúdo HTML
-        report_html = create_report(df_repos)
-
-        # Salvar o relatório em um arquivo HTML
-        output_filename = "relatorio_repositorios.html"
-        with open(output_filename, "w", encoding="utf-8") as f:
-            f.write(report_html)
-
-        print(
-            f"Relatório gerado com sucesso! Abra o arquivo '{output_filename}' no seu navegador."
-        )
-
+        df = pd.read_csv(ARQUIVO_CSV)
     except FileNotFoundError:
-        print("Erro: O arquivo 'repositorios_graphql_completo.csv' não foi encontrado.")
-        print(
-            "Por favor, certifique-se de que o arquivo CSV está no mesmo diretório que este script."
-        )
+        print(f"ERRO: O arquivo '{ARQUIVO_CSV}' não foi encontrado.")
+        print("Execute o script 'coleta_graphql.py' primeiro para gerar os dados.")
+        exit()
+
+    sessoes_rq = [
+        ("01", "Sistemas populares são maduros/antigos?", analisar_rq01),
+        ("02", "Sistemas populares recebem muita contribuição externa?", analisar_rq02),
+        ("03", "Sistemas populares lançam releases com frequência?", analisar_rq03),
+        ("04", "Sistemas populares são atualizados com frequência?", analisar_rq04),
+        (
+            "05",
+            "Sistemas populares são escritos nas linguagens mais populares?",
+            analisar_rq05,
+        ),
+        (
+            "06",
+            "Sistemas populares possuem um alto percentual de issues fechadas?",
+            analisar_rq06,
+        ),
+        (
+            "07 (Bônus)",
+            "As métricas de atividade variam entre as linguagens mais populares?",
+            analisar_rq07,
+        ),
+    ]
+
+    html_content = []
+    for rq_num, titulo, funcao_analise in sessoes_rq:
+        section_html = f'<div class="rq-section"><h3>RQ{rq_num}: {titulo}</h3>'
+
+        texto, grafico_b64 = funcao_analise(df)
+        section_html += texto
+        if grafico_b64:
+            section_html += f'<div class="grafico"><img src="{grafico_b64}" class="img-fluid" alt="Gráfico para RQ{rq_num}"></div>'
+
+        section_html += "</div>"
+        html_content.append(section_html)
+
+    gerar_html(html_content)
+
+    try:
+        webbrowser.open("file://" + os.path.realpath(ARQUIVO_HTML))
     except Exception as e:
-        print(f"Ocorreu um erro inesperado: {e}")
+        print(
+            f"Não foi possível abrir o relatório no navegador. Abra o arquivo '{ARQUIVO_HTML}' manualmente."
+        )
