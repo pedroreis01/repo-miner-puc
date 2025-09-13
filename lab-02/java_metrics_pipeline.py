@@ -34,6 +34,7 @@ RETRY_DELAY = 5
 REPOS_BASE_DIR = "cloned_repos"
 CK_JAR_PATH = os.path.join("CK", "ck-0.7.0.jar")
 FINAL_CSV_FILE = "all_java_projects_class_metrics.csv"
+RESULT_BASE_PATH = "result"
 
 
 def remove_readonly(func, path, _):
@@ -169,7 +170,7 @@ def main():
         folder_name = repo_name.replace("/", "_")
         repo_path = os.path.join(REPOS_BASE_DIR, folder_name)
 
-        ck_output_path = os.path.join(repo_path, "ck_output")
+        ck_output_path = os.path.join(RESULT_BASE_PATH, folder_name + "_ck_output")
 
         try:
             clone_repo_if_not_exists(repo_url, repo_path)
@@ -195,7 +196,9 @@ def main():
     final_df = pd.concat(all_metrics_dfs, ignore_index=True)
     cols = ["repository"] + [col for col in final_df.columns if col != "repository"]
     final_df = final_df[cols]
-    final_df.to_csv(FINAL_CSV_FILE, index=False, encoding="utf-8")
+    final_df.to_csv(
+        RESULT_BASE_PATH + "/" + FINAL_CSV_FILE, index=False, encoding="utf-8"
+    )
     print(f"Arquivo final '{FINAL_CSV_FILE}' salvo com sucesso!")
     print(f"Total de classes analisadas em todos os repositórios: {len(final_df)}")
     print(
