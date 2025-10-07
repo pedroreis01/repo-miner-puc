@@ -23,18 +23,19 @@ HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
 # Constantes da Lógica de Coleta
 REPOS_TO_FETCH = 200
-MIN_PR_COUNT = 100
+MIN_PR_COUNT = 50
 MIN_REVIEW_COUNT = 1
 MIN_DURATION_HOURS = 1
 
 # Constantes de Controle da API
 PRS_PER_PAGE = 50  # Um bom equilíbrio entre quantidade de dados e tempo de resposta
-PAGES_TO_FETCH_REPOS = 5 # Fetch 5 * 100 = 500 repos para garantir que teremos 200 válidos
-REPOS_PER_PAGE = 100
+PAGES_TO_FETCH_REPOS = 5
+REPOS_PER_PAGE = 50
 MAX_RETRIES = 5
 RETRY_DELAY = 5
 
 # Constantes de Saída
+REPO_LIST_CSV_FILE = "selected_repositories.csv"
 FINAL_CSV_FILE = "github_prs_dataset.csv"
 RESULT_DIR = "result"
 
@@ -122,7 +123,9 @@ def parse_datetime(date_string):
 
 def fetch_popular_repos_with_prs_filter():
     """Busca repositórios populares e os filtra pela contagem mínima de PRs."""
-    print(f"--- ETAPA 1: Buscando e filtrando os {REPOS_TO_FETCH} repositórios mais populares ---")
+    print(
+        f"--- ETAPA 1: Buscando e filtrando os {REPOS_TO_FETCH} repositórios mais populares ---"
+    )
     qualified_repos = []
     cursor = None
 
@@ -140,17 +143,21 @@ def fetch_popular_repos_with_prs_filter():
         for repo in repos:
             if not repo:
                 continue
-            
-            total_prs = repo["mergedPRs"]["totalCount"] + repo["closedPRs"]["totalCount"]
+
+            total_prs = (
+                repo["mergedPRs"]["totalCount"] + repo["closedPRs"]["totalCount"]
+            )
             if total_prs >= MIN_PR_COUNT:
                 qualified_repos.append(repo["nameWithOwner"])
-                print(f"  [+] Repositório qualificado: {repo['nameWithOwner']} ({total_prs} PRs). Coletados: {len(qualified_repos)}/{REPOS_TO_FETCH}")
+                print(
+                    f"  [+] Repositório qualificado: {repo['nameWithOwner']} ({total_prs} PRs). Coletados: {len(qualified_repos)}/{REPOS_TO_FETCH}"
+                )
                 if len(qualified_repos) >= REPOS_TO_FETCH:
                     break
-        
+
         if len(qualified_repos) >= REPOS_TO_FETCH:
             break
-        
+
         page_info = search_results.get("pageInfo", {})
         cursor = page_info.get("endCursor")
         if not page_info.get("hasNextPage"):
@@ -158,7 +165,9 @@ def fetch_popular_repos_with_prs_filter():
             break
         time.sleep(1)
 
-    print(f"Sucesso! {len(qualified_repos)} repositórios qualificados foram encontrados.")
+    print(
+        f"Sucesso! {len(qualified_repos)} repositórios qualificados foram encontrados."
+    )
     return qualified_repos
 
 
@@ -167,14 +176,23 @@ def fetch_valid_prs_for_repo(repo_name):
     valid_prs = []
     owner, name = repo_name.split("/")
     cursor = None
-    
+
     print(f"  Analisando PRs para {repo_name}...")
 
     while True:
-        variables = {"owner": owner, "name": name, "cursor": cursor, "perPage": PRS_PER_PAGE}
+        variables = {
+            "owner": owner,
+            "name": name,
+            "cursor": cursor,
+            "perPage": PRS_PER_PAGE,
+        }
         response_data = run_graphql_query(SEARCH_PRS_QUERY, variables)
 
-        if not response_data or "data" not in response_data or not response_data["data"].get("repository"):
+        if (
+            not response_data
+            or "data" not in response_data
+            or not response_data["data"].get("repository")
+        ):
             break
 
         prs_data = response_data["data"]["repository"].get("pullRequests", {})
@@ -191,25 +209,27 @@ def fetch_valid_prs_for_repo(repo_name):
 
             # Filtro 2: Duração mínima de 1 hora
             created_at = parse_datetime(pr["createdAt"])
-            
+
             # O momento final é `mergedAt` para PRs merged, ou `closedAt` para os demais
             final_event_at = parse_datetime(pr["mergedAt"] or pr["closedAt"])
 
             if not created_at or not final_event_at:
                 continue
-            
+
             duration = final_event_at - created_at
             if duration >= timedelta(hours=MIN_DURATION_HOURS):
-                valid_prs.append({
-                    "repository": repo_name,
-                    "pr_number": pr["number"],
-                    "title": pr["title"],
-                    "state": pr["state"],
-                    "review_count": review_count,
-                    "created_at": pr["createdAt"],
-                    "closed_at": pr["mergedAt"] or pr["closedAt"],
-                    "duration_hours": round(duration.total_seconds() / 3600, 2),
-                })
+                valid_prs.append(
+                    {
+                        "repository": repo_name,
+                        "pr_number": pr["number"],
+                        "title": pr["title"],
+                        "state": pr["state"],
+                        "review_count": review_count,
+                        "created_at": pr["createdAt"],
+                        "closed_at": pr["mergedAt"] or pr["closedAt"],
+                        "duration_hours": round(duration.total_seconds() / 3600, 2),
+                    }
+                )
 
         page_info = prs_data.get("pageInfo", {})
         cursor = page_info.get("endCursor")
@@ -217,12 +237,13 @@ def fetch_valid_prs_for_repo(repo_name):
             break
         # Pequeno delay para não sobrecarregar a API em repositórios com muitos PRs
         time.sleep(0.5)
-    
+
     print(f"  -> Encontrados {len(valid_prs)} PRs válidos para {repo_name}.")
     return valid_prs
 
 
 # --- 3. BLOCO DE EXECUÇÃO PRINCIPAL ---
+
 
 def main():
     """Orquestra a pipeline de coleta e agregação de dados de PRs."""
@@ -234,6 +255,16 @@ def main():
     if not repo_list:
         print("Nenhum repositório qualificado encontrado. Encerrando.")
         return
+
+    # --- ETAPA 1.5: Salvando a lista de {len(repo_list)} repositórios qualificados ---
+    print(
+        f"\n--- ETAPA 1.5: Salvando a lista de {len(repo_list)} repositórios qualificados ---"
+    )
+    repo_df = pd.DataFrame(repo_list, columns=["repository_name"])
+    repo_output_path = os.path.join(RESULT_DIR, REPO_LIST_CSV_FILE)
+    repo_df.to_csv(repo_output_path, index=False, encoding="utf-8")
+    print(f"Arquivo de repositórios '{repo_output_path}' salvo com sucesso!")
+    # --- FIM DO NOVO BLOCO ---
 
     # Etapa 2: Iterar sobre os repositórios e coletar os PRs válidos
     print(f"\n--- ETAPA 2: Coletando PRs de {len(repo_list)} repositórios ---")
@@ -249,21 +280,22 @@ def main():
         except Exception as e:
             print(f"ERRO inesperado ao processar {repo_name}: {e}. Pulando.")
             continue
-    
+
     if not all_prs_data:
         print("\nNenhum PR que atenda a todos os critérios foi encontrado.")
         return
-        
+
     # Etapa 3: Consolidar os dados em um único arquivo CSV
     print(f"\n--- ETAPA 3: Consolidando todos os dados em '{FINAL_CSV_FILE}' ---")
     final_df = pd.DataFrame(all_prs_data)
-    
+
     output_path = os.path.join(RESULT_DIR, FINAL_CSV_FILE)
     final_df.to_csv(output_path, index=False, encoding="utf-8")
-    
+
     print(f"Arquivo final '{output_path}' salvo com sucesso!")
     print(f"Total de Pull Requests coletados no dataset: {len(final_df)}")
     print("\nProcesso concluído.")
+
 
 if __name__ == "__main__":
     main()
