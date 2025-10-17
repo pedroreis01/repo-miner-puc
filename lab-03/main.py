@@ -22,14 +22,20 @@ except KeyError:
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
 # Constantes da Lógica de Coleta
-REPOS_TO_FETCH = 200
+# Número máximo de candidatos a repositórios para avaliar
+MAX_CANDIDATE_REPOS = 500
+# Quantidade alvo de PRs válidos por repositório
+TARGET_PRS_PER_REPO = 100
+# Número alvo de repositórios que atingem TARGET_PRS_PER_REPO
+TARGET_REPOS_COUNT = 201
 MIN_PR_COUNT = 50
 MIN_REVIEW_COUNT = 1
 MIN_DURATION_HOURS = 1
 
 # Constantes de Controle da API
 PRS_PER_PAGE = 50  # Um bom equilíbrio entre quantidade de dados e tempo de resposta
-PAGES_TO_FETCH_REPOS = 5
+# 50 por página x 10 páginas = 500 candidatos
+PAGES_TO_FETCH_REPOS = 10
 REPOS_PER_PAGE = 50
 MAX_RETRIES = 5
 RETRY_DELAY = 5
@@ -79,6 +85,18 @@ query SearchPullRequests($owner: String!, $name: String!, $cursor: String, $perP
         createdAt
         mergedAt
         closedAt
+        changedFiles
+        additions
+        deletions
+        participants {
+          totalCount
+        }
+        comments {
+          totalCount
+        }
+        reviewThreads {
+          totalCount
+        }
         reviews(first: 1) {
           totalCount
         }
@@ -124,7 +142,7 @@ def parse_datetime(date_string):
 def fetch_popular_repos_with_prs_filter():
     """Busca repositórios populares e os filtra pela contagem mínima de PRs."""
     print(
-        f"--- ETAPA 1: Buscando e filtrando os {REPOS_TO_FETCH} repositórios mais populares ---"
+        f"--- ETAPA 1: Buscando e filtrando até {MAX_CANDIDATE_REPOS} repositórios mais populares (mín. {MIN_PR_COUNT} PRs) ---"
     )
     qualified_repos = []
     cursor = None
@@ -150,12 +168,12 @@ def fetch_popular_repos_with_prs_filter():
             if total_prs >= MIN_PR_COUNT:
                 qualified_repos.append(repo["nameWithOwner"])
                 print(
-                    f"  [+] Repositório qualificado: {repo['nameWithOwner']} ({total_prs} PRs). Coletados: {len(qualified_repos)}/{REPOS_TO_FETCH}"
+                    f"  [+] Repositório qualificado: {repo['nameWithOwner']} ({total_prs} PRs). Coletados: {len(qualified_repos)}/{MAX_CANDIDATE_REPOS}"
                 )
-                if len(qualified_repos) >= REPOS_TO_FETCH:
+                if len(qualified_repos) >= MAX_CANDIDATE_REPOS:
                     break
 
-        if len(qualified_repos) >= REPOS_TO_FETCH:
+        if len(qualified_repos) >= MAX_CANDIDATE_REPOS:
             break
 
         page_info = search_results.get("pageInfo", {})
@@ -166,7 +184,7 @@ def fetch_popular_repos_with_prs_filter():
         time.sleep(1)
 
     print(
-        f"Sucesso! {len(qualified_repos)} repositórios qualificados foram encontrados."
+        f"Sucesso! {len(qualified_repos)} repositórios qualificados foram encontrados (limite {MAX_CANDIDATE_REPOS})."
     )
     return qualified_repos
 
@@ -218,6 +236,23 @@ def fetch_valid_prs_for_repo(repo_name):
 
             duration = final_event_at - created_at
             if duration >= timedelta(hours=MIN_DURATION_HOURS):
+                # Métricas adicionais da PR
+                changed_files = pr.get("changedFiles")
+                additions = pr.get("additions")
+                deletions = pr.get("deletions")
+                participants_count = (
+                    pr.get("participants", {}).get("totalCount") if pr.get("participants") else None
+                )
+                issue_comments_count = (
+                    pr.get("comments", {}).get("totalCount") if pr.get("comments") else None
+                )
+                review_threads_count = (
+                    pr.get("reviewThreads", {}).get("totalCount") if pr.get("reviewThreads") else None
+                )
+                # Comentários totais (issue comments + threads de review)
+                comments_total = None
+                if issue_comments_count is not None or review_threads_count is not None:
+                    comments_total = (issue_comments_count or 0) + (review_threads_count or 0)
                 valid_prs.append(
                     {
                         "repository": repo_name,
@@ -228,8 +263,22 @@ def fetch_valid_prs_for_repo(repo_name):
                         "created_at": pr["createdAt"],
                         "closed_at": pr["mergedAt"] or pr["closedAt"],
                         "duration_hours": round(duration.total_seconds() / 3600, 2),
+                        "changed_files": changed_files,
+                        "additions": additions,
+                        "deletions": deletions,
+                        "participants_count": participants_count,
+                        "issue_comments_count": issue_comments_count,
+                        "review_threads_count": review_threads_count,
+                        "comments_total": comments_total,
                     }
                 )
+                # Se já atingimos o alvo por repositório, encerramos a coleta deste repo
+                if len(valid_prs) >= TARGET_PRS_PER_REPO:
+                    break
+
+        # Se batemos o limite no meio da página, não precisamos paginar mais
+        if len(valid_prs) >= TARGET_PRS_PER_REPO:
+            break
 
         page_info = prs_data.get("pageInfo", {})
         cursor = page_info.get("endCursor")
@@ -266,17 +315,31 @@ def main():
     print(f"Arquivo de repositórios '{repo_output_path}' salvo com sucesso!")
     # --- FIM DO NOVO BLOCO ---
 
-    # Etapa 2: Iterar sobre os repositórios e coletar os PRs válidos
-    print(f"\n--- ETAPA 2: Coletando PRs de {len(repo_list)} repositórios ---")
+    # Etapa 2: Iterar sobre os repositórios e coletar PRs válidos, parando quando 201 repositórios atingirem 100 PRs
+    print(f"\n--- ETAPA 2: Coletando PRs de até {len(repo_list)} repositórios (alvo: {TARGET_REPOS_COUNT} repos x {TARGET_PRS_PER_REPO} PRs) ---")
     all_prs_data = []
+    repos_completed = 0
     total_repos = len(repo_list)
 
     for i, repo_name in enumerate(repo_list):
+        # Pare se já atingimos o total de repositórios desejado
+        if repos_completed >= TARGET_REPOS_COUNT:
+            print(f"\nAlvo atingido: {repos_completed} repositórios com {TARGET_PRS_PER_REPO} PRs. Encerrando.")
+            break
+
         print(f"\n[ Processando Repositório {i+1}/{total_repos} ]: {repo_name}")
         try:
             prs_for_repo = fetch_valid_prs_for_repo(repo_name)
             if prs_for_repo:
-                all_prs_data.extend(prs_for_repo)
+                # Se o repositório atingiu o alvo, só contamos se chegou a 100 PRs
+                if len(prs_for_repo) >= TARGET_PRS_PER_REPO:
+                    # Garante que apenas 100 sejam adicionados, mesmo que por alguma razão passe do alvo
+                    all_prs_data.extend(prs_for_repo[:TARGET_PRS_PER_REPO])
+                    repos_completed += 1
+                    print(f"  -> Repositório atingiu {TARGET_PRS_PER_REPO} PRs válidos. Total de repositórios completos: {repos_completed}/{TARGET_REPOS_COUNT}")
+                else:
+                    # Caso não tenha atingido a meta, não conta para o total de repositórios completos
+                    print(f"  -> Repositório NÃO atingiu {TARGET_PRS_PER_REPO} PRs válidos (obteve {len(prs_for_repo)}).")
         except Exception as e:
             print(f"ERRO inesperado ao processar {repo_name}: {e}. Pulando.")
             continue
@@ -288,6 +351,10 @@ def main():
     # Etapa 3: Consolidar os dados em um único arquivo CSV
     print(f"\n--- ETAPA 3: Consolidando todos os dados em '{FINAL_CSV_FILE}' ---")
     final_df = pd.DataFrame(all_prs_data)
+    # Garante que a coluna 'title' seja a última no CSV
+    if "title" in final_df.columns:
+        cols = [c for c in final_df.columns if c != "title"] + ["title"]
+        final_df = final_df[cols]
 
     output_path = os.path.join(RESULT_DIR, FINAL_CSV_FILE)
     final_df.to_csv(output_path, index=False, encoding="utf-8")
