@@ -11,10 +11,6 @@ __pycache__/
 *.pyd
 .Python
 
-# Ferramenta CK
-ck.jar
-ck-*.jar
-
 # Resultados
 *.csv
 
