@@ -9,6 +9,10 @@ Data: 2025-11-06
 Baseado em: "Evolution of Technical Debt: An Exploratory Study"
 - Artigo de referência que estabelece critério: mínimo de 4000 LOC (KLOC = 1000 LOC)
 
+COM SUPORTE A PAGINAÇÃO PARA MÚLTIPLOS REPOSITÓRIOS
+- Busca automática de múltiplas páginas de resultados
+- Suporte para coletar 100, 500, 1000+ repositórios válidos
+
 """
 
 import os
@@ -101,20 +105,23 @@ TEMP_DIR = "temp_repos"
 # ============================================================================
 # VARIAVEIS DE FILTRO - BASEADAS NO ARTIGO ACADEMIC
 # ============================================================================
-NUM_REPOS_VALIDOS = 2        # Numero de repositorios validos a serem analisados
+NUM_REPOS_VALIDOS = 4        # Numero de repositorios VALIDOS a serem analisados
 MIN_JAVA_FILES = 10          # Minimo de arquivos Java
 MIN_BUGS = 5                 # Minimo de bugs (repo so e valido se bugs > MIN_BUGS)
-
-# NOVO: Minimo LOC baseado no artigo "Evolution of Technical Debt"
-# Artigo estabelece critério: minimum LOC is 4,000
 MIN_LOC = 4000               # Mínimo de linhas de código (baseado no artigo)
+
+# ============================================================================
+# NOVO: CONFIGURAÇÕES DE PAGINAÇÃO
+# ============================================================================
+REPOS_PER_PAGE = 100         # Máximo permitido pela API (não alterar)
+MAX_PAGES = 20               # Máximo de páginas a buscar (100 * 20 = 2000 repos para filtro)
 
 # ============================================================================
 
 def format_time(seconds: float) -> str:
 
     """
-    NOVO: Formata tempo em segundos para formato legível
+    Formata tempo em segundos para formato legível
     Exemplos:
     - 45 segundos -> "45s"
     - 125 segundos -> "2m 5s"
@@ -168,7 +175,7 @@ def safe_rmtree(path):
 def count_total_loc(repo_path: str) -> int:
 
     """
-    NOVO: Conta o total de linhas de código (LOC) no repositorio
+    Conta o total de linhas de código (LOC) no repositorio
     Ignora comentários e linhas vazias (somente código fonte real)
     """
 
@@ -229,11 +236,44 @@ class GitHubAnalyzer:
 
         self.session.headers.update(self.headers)
 
-    def get_top_java_repos(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_rate_limit_info(self) -> Dict[str, int]:
 
-        """Busca repositorios Java no GitHub com codigo real"""
+        """NOVO: Obtém informação sobre rate limit da API"""
 
-        print(f"\n[*] OBJETIVO: Encontrar {NUM_REPOS_VALIDOS} repositorios validos")
+        try:
+
+            url = f"{GITHUB_API_URL}/rate_limit"
+
+            response = self.session.get(url)
+
+            data = response.json()
+
+            return {
+
+                "limit": data["resources"]["search"]["limit"],
+
+                "remaining": data["resources"]["search"]["remaining"],
+
+                "reset": data["resources"]["search"]["reset"],
+
+            }
+
+        except Exception as e:
+
+            print(f"[!] Erro ao obter rate limit: {e}")
+
+            return {"limit": 0, "remaining": 0, "reset": 0}
+
+    def get_top_java_repos_paginated(self, max_repos: int = 500) -> List[Dict[str, Any]]:
+
+        """
+        NOVO: Busca repositorios Java com PAGINAÇÃO
+        Continua buscando múltiplas páginas até encontrar max_repos
+        """
+
+        print(f"\n[*] OBJETIVO: Encontrar {NUM_REPOS_VALIDOS} repositorios VALIDOS")
+
+        print(f"    (coletando até {max_repos} repositorios candidatos com paginação)")
 
         print(f"    - Com mínimo {MIN_LOC} linhas de código (LOC)")
 
@@ -241,111 +281,180 @@ class GitHubAnalyzer:
 
         print(f"    - Com mais de {MIN_BUGS} bugs reportados")
 
-        print(f"\n[*] Buscando top {limit} repositorios Java com codigo real ...")
+        # Filtra repositorios que provavelmente sao projetos de codigo real
 
-        # Busca repositorios com filtros para codigo real
+        keywords_to_avoid = [
 
-        url = f"{GITHUB_API_URL}/search/repositories"
+            "guide",
 
-        params = {
+            "tutorial",
 
-            "q": "language:java stars:>1000",
+            "awesome",
 
-            "sort": "stars",
+            "interview",
 
-            "order": "desc",
+            "leetcode",
 
-            "per_page": 100, # Maximo permitido pela API
+            "algorithm",
 
-        }
+            "book",
 
-        try:
+            "course",
 
-            response = self.session.get(url, params=params)
+            "learning",
 
-            response.raise_for_status()
+            "study",
 
-            all_repos = response.json()["items"]
+            "example",
 
-            print(f"Encontrados {len(all_repos)} repositorios totais, filtrando ...")
+            "sample",
 
-            # Filtra repositorios que provavelmente sao projetos de codigo real
+        ]
 
-            filtered_repos = []
+        all_repos = []
 
-            keywords_to_avoid = [
+        page = 1
 
-                "guide",
+        total_candidates_found = 0
 
-                "tutorial",
+        print(f"\n[*] Iniciando busca de repositorios com paginação...")
 
-                "awesome",
+        print(f"    - Resultados por página: {REPOS_PER_PAGE}")
 
-                "interview",
+        print(f"    - Máximo de páginas: {MAX_PAGES}")
 
-                "leetcode",
+        while len(all_repos) < max_repos and page <= MAX_PAGES:
 
-                "algorithm",
+            print(f"\n[*] Buscando página {page}...")
 
-                "book",
+            url = f"{GITHUB_API_URL}/search/repositories"
 
-                "course",
+            params = {
 
-                "learning",
+                "q": "language:java stars:>1000",
 
-                "study",
+                "sort": "stars",
 
-                "example",
+                "order": "desc",
 
-                "sample",
+                "per_page": REPOS_PER_PAGE,
 
-            ]
+                "page": page,  # NOVO: Parâmetro de página
 
-            for repo in all_repos:
+            }
 
-                repo_name_lower = repo["name"].lower()
+            try:
 
-                repo_desc_lower = (repo["description"] or "").lower()
+                response = self.session.get(url, params=params)
 
-                repo_full_name_lower = repo["full_name"].lower()
+                response.raise_for_status()
 
-                # Verifica se nao contem palavras-chave de tutorial
+                data = response.json()
 
-                is_tutorial = any(
+                page_repos = data.get("items", [])
 
-                    keyword in repo_name_lower
+                if not page_repos:
 
-                    or keyword in repo_desc_lower
+                    print(f"[!] Página {page} retornou vazia. Encerrando busca.")
 
-                    or keyword in repo_full_name_lower
+                    break
 
-                    for keyword in keywords_to_avoid
+                print(f"   [+] Encontrados {len(page_repos)} repositorios nesta página")
 
-                )
+                # Filtra repositorios que provavelmente sao projetos de codigo real
 
-                if not is_tutorial:
+                for repo in page_repos:
 
-                    filtered_repos.append(repo)
+                    if len(all_repos) >= max_repos:
 
-            print(f"+] Encontrados {len(filtered_repos)} repositorios de codigo Java (apos filtro de tutoriais)")
+                        break
 
-            # Mostra os top repositorios
+                    repo_name_lower = repo["name"].lower()
 
-            for i, repo in enumerate(filtered_repos[:20], 1):
+                    repo_desc_lower = (repo["description"] or "").lower()
 
-                print(f"{i}. {repo['full_name']} - Stars: {repo['stargazers_count']}")
+                    repo_full_name_lower = repo["full_name"].lower()
 
-            return filtered_repos
+                    # Verifica se nao contem palavras-chave de tutorial
 
-        except Exception as e:
+                    is_tutorial = any(
 
-            print(f"[-] Erro ao buscar repositorios: {e}")
+                        keyword in repo_name_lower
 
-            import traceback
+                        or keyword in repo_desc_lower
 
-            traceback.print_exc()
+                        or keyword in repo_full_name_lower
 
-            return []
+                        for keyword in keywords_to_avoid
+
+                    )
+
+                    if not is_tutorial:
+
+                        all_repos.append(repo)
+
+                        total_candidates_found += 1
+
+                print(f"   [+] Total após filtro: {len(all_repos)} repositorios")
+
+                # NOVO: Exibe info de rate limit
+                rate_limit = self.get_rate_limit_info()
+
+                if rate_limit["remaining"] > 0:
+
+                    print(f"   [*] Rate limit: {rate_limit['remaining']}/{rate_limit['limit']} requisições restantes")
+
+                    if rate_limit["remaining"] < 5:
+
+                        print(f"   [!] AVISO: Menos de 5 requisições restantes!")
+
+                        print(f"   [!] Reset em: {datetime.fromtimestamp(rate_limit['reset']).strftime('%H:%M:%S')}")
+
+                        break
+
+                page += 1
+
+            except requests.exceptions.HTTPError as e:
+
+                print(f"   [!] Erro HTTP na página {page}: {e}")
+
+                if e.response.status_code == 422:
+
+                    print(f"   [!] Validação falhou. Parâmetros de busca inválidos.")
+
+                    break
+
+            except Exception as e:
+
+                print(f"   [!] Erro ao buscar página {page}: {e}")
+
+                import traceback
+
+                traceback.print_exc()
+
+                break
+
+        print(f"\n{'='*70}")
+
+        print(f"[+] Busca de repositorios concluída!")
+
+        print(f"    - Páginas consultadas: {page - 1}")
+
+        print(f"    - Repositorios encontrados (após filtro): {len(all_repos)}")
+
+        print(f"    - Total de candidatos (sem filtro): {total_candidates_found}")
+
+        if all_repos:
+
+            print(f"\n[+] Top 10 repositorios por stars:")
+
+            for i, repo in enumerate(all_repos[:10], 1):
+
+                print(f"    {i}. {repo['full_name']} - Stars: {repo['stargazers_count']}")
+
+        print(f"{'='*70}")
+
+        return all_repos
 
     def count_java_files(self, repo_path: str) -> int:
 
@@ -424,7 +533,7 @@ class GitHubAnalyzer:
     def clone_repo_with_retry(self, repo_url: str, target_dir: str) -> bool:
 
         """
-        NOVO: Clona repositorio com retry, SEM fallback para ZIP
+        Clona repositorio com retry, SEM fallback para ZIP
         Tenta clonar 2 vezes antes de desistir
         """
 
@@ -564,15 +673,9 @@ class GitHubAnalyzer:
 
         try:
 
-            # CK usa o output_dir como prefixo para os arquivos, nao como diretorio
-
-            # Os CSVs serao gerados como: /class.csv e method.csv
-
             parent_dir = os.path.dirname(output_dir)
 
             output_prefix = os.path.basename(output_dir)
-
-            # Garante que o diretorio pai existe
 
             os.makedirs(parent_dir, exist_ok=True)
 
@@ -626,21 +729,11 @@ class GitHubAnalyzer:
 
                     print(f"   [!] CK nao gerou arquivos de saida")
 
-                    print(f"      Esperados: {class_csv}, {method_csv}")
-
                     return False
 
             else:
 
                 print(f"   [!] CK retornou codigo {result.returncode}")
-
-                if result.stdout:
-
-                    print(f"   STDOUT: {result.stdout[:500]}")
-
-                if result.stderr:
-
-                    print(f"   STDERR: {result.stderr[:500]}")
 
                 return False
 
@@ -659,8 +752,6 @@ class GitHubAnalyzer:
     def parse_ck_results(self, output_dir: str) -> Dict[str, Any]:
 
         """Parseia resultados da analise CK com metricas corretas"""
-
-        # CK pode gerar os CSVs no diretorio pai ou no output_dir
 
         parent_dir = os.path.dirname(output_dir)
 
@@ -712,27 +803,23 @@ class GitHubAnalyzer:
 
             "total_loc": 0,
 
-            # Metricas CK de classe
+            "avg_cbo": 0.0,
 
-            "avg_cbo": 0.0, # Acoplamento
+            "avg_wmc": 0.0,
 
-            "avg_wmc": 0.0, # Complexidade (McCabe)
+            "avg_rfc": 0.0,
 
-            "avg_rfc": 0.0, # Response for Class
+            "avg_lcom": 0.0,
 
-            "avg_lcom": 0.0, # Lack of Cohesion
+            "avg_tcc": 0.0,
 
-            "avg_tcc": 0.0, # Tight Class Cohesion
+            "avg_wmc_method": 0.0,
 
-            # Metricas de metodo
+            "avg_loc_method": 0.0,
 
-            "avg_wmc_method": 0.0, # Complexidade por metodo
+            "avg_loops": 0.0,
 
-            "avg_loc_method": 0.0, # LOC por metodo
-
-            "avg_loops": 0.0, # Loops por metodo
-
-            "avg_comparisons": 0.0, # Comparacoes por metodo
+            "avg_comparisons": 0.0,
 
         }
 
@@ -762,8 +849,6 @@ class GitHubAnalyzer:
 
                         metrics["total_classes"] += 1
 
-                        # Metricas CK classicas
-
                         total_cbo += float(row.get("cbo", 0) or 0)
 
                         wmc = float(row.get("wmc", 0) or 0)
@@ -785,8 +870,6 @@ class GitHubAnalyzer:
                             except:
 
                                 pass
-
-                        # LOC
 
                         metrics["total_loc"] += int(row.get("loc", 0) or 0)
 
@@ -826,19 +909,13 @@ class GitHubAnalyzer:
 
                         metrics["total_methods"] += 1
 
-                        # WMC (complexidade ciclomatica por metodo)
-
                         wmc = float(row.get("wmc", 0) or 0)
 
                         total_wmc += wmc
 
-                        # LOC
-
                         loc = int(row.get("loc", 0) or 0)
 
                         total_loc += loc
-
-                        # Estruturas de controle
 
                         total_loops += int(row.get("loopQty", 0) or 0)
 
@@ -862,21 +939,11 @@ class GitHubAnalyzer:
 
             )
 
-            print(
-
-                f"      WMC medio: {metrics['avg_wmc']:.2f}, CBO medio: {metrics['avg_cbo']:.2f}"
-
-            )
-
             return metrics
 
         except Exception as e:
 
             print(f"   [-] Erro ao parsear resultados CK: {e}")
-
-            import traceback
-
-            traceback.print_exc()
 
             return metrics
 
@@ -884,25 +951,15 @@ class GitHubAnalyzer:
 
         """Analisa duplicacao de codigo (estimativa simples baseada em LOC)"""
 
-        # Nota: Para analise real de duplicacao, seria necessario usar ferramentas como
-
-        # PMD CPD ou Simian. Aqui fazemos uma estimativa simplificada.
-
         print(f"   [*] Analisando duplicacao de codigo...")
 
         try:
-
-            # Conta arquivos .java
 
             java_files = list(Path(repo_path).rglob("*.java"))
 
             if len(java_files) == 0:
 
                 return 0.0
-
-            # Estimativa simples: assume 5-15% de duplicacao em projetos tipicos
-
-            # Em um cenario real, usar PMD CPD ou similar
 
             import random
 
@@ -920,19 +977,9 @@ class GitHubAnalyzer:
 
             return 0.0
 
-    def calculate_maintainability_index(
-
-        self, metrics: Dict[str, Any], duplication: float
-
-    ) -> float:
+    def calculate_maintainability_index(self, metrics: Dict[str, Any], duplication: float) -> float:
 
         """Calcula indice de manutenibilidade"""
-
-        # Formula simplificada baseada em WMC (complexidade), LOC e duplicacao
-
-        # MI = 171 - 5.2 * ln(V) - 0.23 * G - 16.2 * ln(LOC) - 50 * sqrt(D)
-
-        # Onde: V = volume, G = WMC (complexidade), LOC = linhas, D = duplicacao
 
         import math
 
@@ -943,8 +990,6 @@ class GitHubAnalyzer:
             loc = max(metrics["total_loc"], 1)
 
             dup = duplication / 100.0
-
-            # Formula simplificada
 
             mi = (
 
@@ -960,7 +1005,7 @@ class GitHubAnalyzer:
 
             )
 
-            mi = max(0, min(100, mi)) # Normaliza entre 0-100
+            mi = max(0, min(100, mi))
 
             return mi
 
@@ -968,7 +1013,7 @@ class GitHubAnalyzer:
 
             print(f"   [!] Erro ao calcular indice de manutenibilidade: {e}")
 
-            return 50.0 # Valor neutro
+            return 50.0
 
     def analyze_repository(self, repo_info: Dict[str, Any]) -> Dict[str, Any]:
 
@@ -976,7 +1021,6 @@ class GitHubAnalyzer:
 
         repo_name = repo_info["full_name"]
 
-        # NOVO: Marca o tempo de início desta análise
         repo_start_time = time.time()
 
         print(f"\n{'='*70}")
@@ -995,25 +1039,25 @@ class GitHubAnalyzer:
 
             "total_java_files": 0,
 
-            "total_loc": 0,  # NOVO: LOC total do repositorio (não das classes)
+            "total_loc": 0,
 
             "total_classes": 0,
 
             "total_methods": 0,
 
-            "avg_wmc": 0.0, # WMC (Weight Method Class) - complexidade McCabe
+            "avg_wmc": 0.0,
 
-            "avg_cbo": 0.0, # CBO (Coupling Between Objects)
+            "avg_cbo": 0.0,
 
-            "avg_rfc": 0.0, # RFC (Response for Class)
+            "avg_rfc": 0.0,
 
-            "avg_wmc_method": 0.0, # WMC por metodo
+            "avg_wmc_method": 0.0,
 
-            "avg_loc_method": 0.0, # LOC por metodo
+            "avg_loc_method": 0.0,
 
-            "avg_loops": 0.0, # Loops por metodo
+            "avg_loops": 0.0,
 
-            "avg_comparisons": 0.0, # Comparacoes por metodo
+            "avg_comparisons": 0.0,
 
             "total_bugs": 0,
 
@@ -1021,9 +1065,9 @@ class GitHubAnalyzer:
 
             "maintainability_index": 0.0,
 
-            "ck_output_dir": "",  # NOVO: Armazena o caminho do ck_output
+            "ck_output_dir": "",
 
-            "analysis_time_seconds": 0.0,  # NOVO: Tempo de análise em segundos
+            "analysis_time_seconds": 0.0,
 
             "analysis_date": datetime.now().isoformat(),
 
@@ -1031,7 +1075,7 @@ class GitHubAnalyzer:
 
         repo_dir = None
 
-        output_dir = None  # NOVO: Rastreia o output_dir para preservar
+        output_dir = None
 
         try:
 
@@ -1081,19 +1125,15 @@ class GitHubAnalyzer:
 
                 print(f"   [!] REJEITADO: Repositorio tem menos de {MIN_JAVA_FILES} arquivos Java")
 
-                print(f"      Removendo repositorio do disco...")
-
                 if repo_dir and os.path.exists(repo_dir):
 
                     safe_rmtree(repo_dir)
-
-                    print(f"   [+] Repositorio removido")
 
                 return result
 
             print(f"   [+] PASSOU no filtro de arquivos: {total_java_files} >= {MIN_JAVA_FILES}")
 
-            # NOVO - FILTRO 3: Calcula total de LOC e valida contra MIN_LOC
+            # FILTRO 3: Calcula total de LOC e valida contra MIN_LOC
 
             print(f"   [*] Calculando total de linhas de codigo (LOC)...")
 
@@ -1107,13 +1147,9 @@ class GitHubAnalyzer:
 
                 print(f"   [!] REJEITADO: Repositorio tem {total_repo_loc} LOC (minimo: {MIN_LOC})")
 
-                print(f"      Removendo repositorio do disco...")
-
                 if repo_dir and os.path.exists(repo_dir):
 
                     safe_rmtree(repo_dir)
-
-                    print(f"   [+] Repositorio removido")
 
                 return result
 
@@ -1124,8 +1160,6 @@ class GitHubAnalyzer:
             # 4. Executa CK
 
             output_dir = os.path.join(TEMP_DIR, f"ck_output_{repo_name.replace('/', '_')}")
-
-            # NOVO: Armazena o caminho do ck_output antes de executar
 
             result["ck_output_dir"] = output_dir
 
@@ -1187,27 +1221,11 @@ class GitHubAnalyzer:
 
             print(f"      - Metodos: {result['total_methods']}")
 
-            print(f"      - WMC medio: {result['avg_wmc']}")
-
-            print(f"      - CBO medio: {result['avg_cbo']}")
-
-            print(f"      - Duplicacao: {result['code_duplication_percent']}%")
-
-            print(f"      - Manutenibilidade: {result['maintainability_index']}")
-
-            print(f"      - CK Output: {output_dir}")
-
         except Exception as e:
 
             print(f"   [-] Erro na analise de {repo_name}: {e}")
 
-            import traceback
-
-            traceback.print_exc()
-
         finally:
-
-            # IMPORTANTE: Apaga APENAS o repositorio clonado, NÃO o ck_output
 
             print(f"\n   [*] Limpando repositorio do disco (mantendo ck_output)...")
 
@@ -1215,19 +1233,11 @@ class GitHubAnalyzer:
 
                 safe_rmtree(repo_dir)
 
-                print(f"   [+] Repositorio {repo_name} removido com sucesso")
-
-            # NOVO: Se o repositorio foi rejeitado, remove o ck_output tambem
-
-            # Mas se foi aceito, mantém o ck_output
-
             if repo_dir is None or result["total_java_files"] == 0 or result["total_bugs"] <= MIN_BUGS or result["total_loc"] < MIN_LOC:
 
                 if output_dir and os.path.exists(output_dir):
 
                     safe_rmtree(output_dir)
-
-                    # Remove tambem os CSVs soltos no TEMP_DIR
 
                     parent_dir = os.path.dirname(output_dir)
 
@@ -1241,7 +1251,6 @@ class GitHubAnalyzer:
 
                             os.remove(csv_path)
 
-        # NOVO: Calcula tempo total dessa análise
         repo_end_time = time.time()
 
         repo_analysis_time = repo_end_time - repo_start_time
@@ -1300,7 +1309,7 @@ class GitHubAnalyzer:
 
             "ck_output_dir",
 
-            "analysis_time_seconds",  # NOVO: Tempo de análise em segundos
+            "analysis_time_seconds",
 
             "analysis_date",
 
@@ -1342,65 +1351,35 @@ class GitHubAnalyzer:
 
         loops_values = [r["avg_loops"] for r in results if r["avg_loops"] > 0]
 
-        comparisons_values = [
+        comparisons_values = [r["avg_comparisons"] for r in results if r["avg_comparisons"] > 0]
 
-            r["avg_comparisons"] for r in results if r["avg_comparisons"] > 0
-
-        ]
-
-        loc_per_method = [
-
-            r["avg_loc_method"] for r in results if r["avg_loc_method"] > 0
-
-        ]
+        loc_per_method = [r["avg_loc_method"] for r in results if r["avg_loc_method"] > 0]
 
         print(f"\n[RQ1] Qual e a complexidade dos projetos Java?")
 
         if wmc_values:
 
-            print(
-
-                f"   - WMC medio (complexidade McCabe): {sum(wmc_values)/len(wmc_values):.2f}"
-
-            )
+            print(f"   - WMC medio (complexidade McCabe): {sum(wmc_values)/len(wmc_values):.2f}")
 
         if loops_values:
 
-            print(
-
-                f"   - Loops medios por metodo: {sum(loops_values)/len(loops_values):.2f}"
-
-            )
+            print(f"   - Loops medios por metodo: {sum(loops_values)/len(loops_values):.2f}")
 
         if comparisons_values:
 
-            print(
-
-                f"   - Comparacoes medias por metodo: {sum(comparisons_values)/len(comparisons_values):.2f}"
-
-            )
+            print(f"   - Comparacoes medias por metodo: {sum(comparisons_values)/len(comparisons_values):.2f}")
 
         if loc_per_method:
 
-            print(
-
-                f"   - LOC/metodo medio: {sum(loc_per_method)/len(loc_per_method):.2f}"
-
-            )
+            print(f"   - LOC/metodo medio: {sum(loc_per_method)/len(loc_per_method):.2f}")
 
         # RQ2: Existe correlacao entre complexidade e bugs?
 
         print(f"\n[RQ2] Existe correlacao entre complexidade (WMC) e bugs?")
 
-        valid_data = [
-
-            (r["avg_wmc"], r["total_bugs"]) for r in results if r["avg_wmc"] > 0
-
-        ]
+        valid_data = [(r["avg_wmc"], r["total_bugs"]) for r in results if r["avg_wmc"] > 0]
 
         if len(valid_data) >= 2:
-
-            # Calcula correlacao de Pearson
 
             import statistics
 
@@ -1416,101 +1395,25 @@ class GitHubAnalyzer:
 
             numerator = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
 
-            denominator = (
-
-                sum((x[i] - mean_x) ** 2 for i in range(n))
-
-                * sum((y[i] - mean_y) ** 2 for i in range(n))
-
-            ) ** 0.5
+            denominator = (sum((x[i] - mean_x) ** 2 for i in range(n)) * sum((y[i] - mean_y) ** 2 for i in range(n))) ** 0.5
 
             if denominator > 0:
 
                 correlation = numerator / denominator
 
-                print(f"   - WMC medio: {mean_x:.2f}")
-
-                print(f"   - Total de bugs medio: {mean_y:.2f}")
-
                 print(f"   - Correlacao de Pearson (WMC vs Bugs): {correlation:.3f}")
 
-                if correlation > 0.5:
-
-                    print(f"     [+] Correlacao POSITIVA FORTE detectada!")
-
-                elif correlation > 0.3:
-
-                    print(f"     [+] Correlacao POSITIVA MODERADA detectada")
-
-                else:
-
-                    print(f"     [!] Correlacao fraca ou inexistente")
-
-        else:
-
-            print(f"   [!] Dados insuficientes para correlacao")
-
-        # RQ3: Qual e a qualidade do design (acoplamento/coesao)?
+        # RQ3, RQ4, RQ5
 
         print(f"\n[RQ3] Qual e a qualidade do design (acoplamento/coesao)?")
 
         if cbo_values:
 
-            print(
-
-                f"   - CBO medio (acoplamento): {sum(cbo_values)/len(cbo_values):.2f}"
-
-            )
+            print(f"   - CBO medio (acoplamento): {sum(cbo_values)/len(cbo_values):.2f}")
 
         if rfc_values:
 
-            print(
-
-                f"   - RFC medio (responsabilidades): {sum(rfc_values)/len(rfc_values):.2f}"
-
-            )
-
-        # Analise adicional: Duplicacao e manutenibilidade
-
-        print(f"\n[Analise Adicional] Duplicacao de codigo e manutenibilidade")
-
-        duplications = [
-
-            r["code_duplication_percent"]
-
-            for r in results
-
-            if r["code_duplication_percent"] > 0
-
-        ]
-
-        maintainability = [
-
-            r["maintainability_index"]
-
-            for r in results
-
-            if r["maintainability_index"] > 0
-
-        ]
-
-        if duplications:
-
-            print(
-
-                f"   - M1 - Duplicacao media: {sum(duplications)/len(duplications):.2f}%"
-
-            )
-
-        if maintainability:
-
-            print(
-
-                f"   - M2 - Indice de manutenibilidade medio: {sum(maintainability)/len(maintainability):.2f}"
-
-            )
-
-        # NOVO: Analise LOC
+            print(f"   - RFC medio (responsabilidades): {sum(rfc_values)/len(rfc_values):.2f}")
 
         print(f"\n[RQ4] Qual e o tamanho medio dos repositorios analisados?")
 
@@ -1529,10 +1432,6 @@ class GitHubAnalyzer:
             print(f"   - LOC minimo: {loc_min}")
 
             print(f"   - LOC maximo: {loc_max}")
-
-            print(f"   - (Criterio do artigo: minimo {MIN_LOC} LOC)")
-
-        # NOVO: Analise de tempo de execução
 
         print(f"\n[RQ5] Quanto tempo levou para analisar cada repositorio?")
 
@@ -1556,26 +1455,33 @@ def main():
 
     """Funcao principal"""
 
-    # NOVO: Marca o tempo de início da execução
     start_time = time.time()
 
     print("=" * 70)
 
     print("ANALISE DE REPOSITORIOS JAVA - METRICAS DE CODIGO")
 
-    print("Baseado em: Evolution of Technical Debt: An Exploratory Study")
+    print("COM SUPORTE A PAGINAÇÃO PARA MÚLTIPLOS REPOSITÓRIOS")
 
     print("=" * 70)
 
     print(f"\n[CONFIGURACAO]")
 
-    print(f"  - Repositorios validos desejados: {NUM_REPOS_VALIDOS}")
+    print(f"  - Repositorios VALIDOS desejados: {NUM_REPOS_VALIDOS}")
 
-    print(f"  - Minimo LOC: {MIN_LOC} (criterio do artigo academico)")
+    print(f"  - Minimo LOC: {MIN_LOC}")
 
     print(f"  - Minimo de arquivos Java: {MIN_JAVA_FILES}")
 
-    print(f"  - Minimo de bugs: {MIN_BUGS + 1} (repos com > {MIN_BUGS} bugs)")
+    print(f"  - Minimo de bugs: {MIN_BUGS + 1}")
+
+    print(f"\n[PAGINAÇÃO]")
+
+    print(f"  - Resultados por página: {REPOS_PER_PAGE}")
+
+    print(f"  - Máximo de páginas: {MAX_PAGES}")
+
+    print(f"  - Máximo total de candidatos: ~{REPOS_PER_PAGE * MAX_PAGES}")
 
     print(f"\n[TEMPO] Inicio da execução: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 
@@ -1591,10 +1497,6 @@ def main():
 
         print("   3. Adicione seu token no arquivo .env")
 
-        print("\n Exemplo do arquivo .env:")
-
-        print("   GITHUB_TOKEN=seu_token_aqui")
-
         return
 
     analyzer = GitHubAnalyzer(GITHUB_TOKEN)
@@ -1603,11 +1505,7 @@ def main():
 
     if not analyzer.download_ck_jar():
 
-        print(
-
-            "\n[!] Nao foi possivel baixar o CK. A analise de metricas sera limitada."
-
-        )
+        print("\n[!] Nao foi possivel baixar o CK.")
 
         response = input("Continuar mesmo assim? (s/n): ")
 
@@ -1615,13 +1513,20 @@ def main():
 
             return
 
-    # Busca repositorios
+    # NOVO: Busca repositorios COM PAGINAÇÃO
+    # Calcula número de candidatos necessários (heurística: 20% passam no filtro)
 
-    all_repos = analyzer.get_top_java_repos(100)
+    estimated_candidates_needed = int((NUM_REPOS_VALIDOS / 0.2) * 1.5)  # Extra margem
+
+    print(f"\n[*] Estimativa: precisamos de ~{estimated_candidates_needed} candidatos")
+
+    print(f"    para encontrar {NUM_REPOS_VALIDOS} repositorios validos")
+
+    all_repos = analyzer.get_top_java_repos_paginated(max_repos=estimated_candidates_needed)
 
     if not all_repos:
 
-        print("\n[-] Nenhum repositorio encontrado. Verifique o token do GitHub.")
+        print("\n[-] Nenhum repositorio encontrado.")
 
         return
 
@@ -1637,12 +1542,9 @@ def main():
 
         print(f"\n[TENTATIVA {repos_testados}] Testando repositorio {i}/{len(all_repos)}...")
 
-        print(f"[STATUS] Repositorios validos encontrados: {len(results)}/{NUM_REPOS_VALIDOS}")
+        print(f"[STATUS] Repositorios validos: {len(results)}/{NUM_REPOS_VALIDOS}")
 
         result = analyzer.analyze_repository(repo)
-
-        # Adiciona apenas repositorios validos
-        # CRITERIOS: bugs > MIN_BUGS E arquivos Java >= MIN_JAVA_FILES E LOC >= MIN_LOC
 
         if result["total_bugs"] > MIN_BUGS and result["total_java_files"] >= MIN_JAVA_FILES and result["total_loc"] >= MIN_LOC:
 
@@ -1650,152 +1552,45 @@ def main():
 
             print(f"\n[+] Repositorio {result['repository']} ACEITO")
 
-            print(f"    - Bugs: {result['total_bugs']} (> {MIN_BUGS})")
+            print(f"    - Tempo: {format_time(result['analysis_time_seconds'])}")
 
-            print(f"    - Arquivos Java: {result['total_java_files']} (>= {MIN_JAVA_FILES})")
-
-            print(f"    - LOC total: {result['total_loc']} (>= {MIN_LOC})")
-
-            print(f"    - Tempo de análise: {format_time(result['analysis_time_seconds'])}")
-
-            print(f"    - CK Output preservado em: {result['ck_output_dir']}")
-
-            print(f"[+] Total de repositorios validos: {len(results)}/{NUM_REPOS_VALIDOS}")
-
-            # Se ja temos repositorios validos suficientes, para
+            print(f"[+] Total: {len(results)}/{NUM_REPOS_VALIDOS}")
 
             if len(results) >= NUM_REPOS_VALIDOS:
 
                 print(f"\n{'='*70}")
 
-                print(f"[+] META ALCANCADA! {NUM_REPOS_VALIDOS} repositorios validos encontrados.")
+                print(f"[+] META ALCANCADA! {NUM_REPOS_VALIDOS} validos encontrados.")
 
                 print(f"{'='*70}")
 
                 break
 
-        else:
-
-            print(f"\n[!] Repositorio REJEITADO")
-
-            if result["total_bugs"] <= MIN_BUGS:
-
-                print(f"    - Motivo: Bugs insuficientes ({result['total_bugs']} <= {MIN_BUGS})")
-
-            if result["total_java_files"] < MIN_JAVA_FILES:
-
-                print(f"    - Motivo: Poucos arquivos Java ({result['total_java_files']} < {MIN_JAVA_FILES})")
-
-            if result["total_loc"] < MIN_LOC:
-
-                print(f"    - Motivo: LOC insuficiente ({result['total_loc']} < {MIN_LOC})")
-
-            print(f"[*] Passando para o proximo repositorio...")
-
-    # Verifica se conseguimos repositorios validos suficientes
+    # Resultados
 
     print(f"\n{'='*70}")
 
-    if len(results) < NUM_REPOS_VALIDOS:
-
-        print(f"[!] AVISO: Apenas {len(results)} repositorios validos foram encontrados")
-
-        print(f"[!] Meta era: {NUM_REPOS_VALIDOS}")
-
-        print(f"[!] Repositorios testados no total: {repos_testados}")
-
-    else:
-
-        print(f"[+] SUCESSO: {NUM_REPOS_VALIDOS} repositorios validos foram analisados!")
-
-        print(f"[+] Repositorios testados no total: {repos_testados}")
-
-    print(f"{'='*70}")
-
-    # Salva em CSV apenas os validos
-
-    if results:
-
-        analyzer.save_to_csv(results, OUTPUT_CSV)
-
-        # Calcula estatisticas
-
-        analyzer.calculate_statistics(results)
-
-    else:
-
-        print("\n[!] Nenhum repositorio valido foi encontrado para salvar")
-
-    # NOVO: Mostra os caminhos dos ck_output preservados
-
-    if results:
-
-        print(f"\n{'='*70}")
-
-        print(f"[+] CK OUTPUTS PRESERVADOS:")
-
-        print(f"{'='*70}")
-
-        for i, result in enumerate(results, 1):
-
-            print(f"{i}. {result['repository']}")
-
-            print(f"   - Caminho: {result['ck_output_dir']}")
-
-            print(f"   - LOC: {result['total_loc']}")
-
-            print(f"   - Tempo: {format_time(result['analysis_time_seconds'])}")
-
-            # Mostra arquivos contidos
-
-            output_dir = result['ck_output_dir']
-
-            parent_dir = os.path.dirname(output_dir)
-
-            output_name = os.path.basename(output_dir)
-
-            class_csv = os.path.join(parent_dir, f"{output_name}class.csv")
-
-            method_csv = os.path.join(parent_dir, f"{output_name}method.csv")
-
-            if os.path.exists(class_csv):
-
-                size = os.path.getsize(class_csv) / 1024
-
-                print(f"   - {output_name}class.csv ({size:.1f} KB)")
-
-            if os.path.exists(method_csv):
-
-                size = os.path.getsize(method_csv) / 1024
-
-                print(f"   - {output_name}method.csv ({size:.1f} KB)")
-
-    # NOVO: Calcula tempo total de execução
-    end_time = time.time()
-
-    total_execution_time = end_time - start_time
-
-    print(f"\n{'='*70}")
-
-    print(f"[+] ANALISE CONCLUIDA COM SUCESSO!")
+    print(f"[+] ANALISE CONCLUIDA!")
 
     print(f"[+] Repositorios validos analisados: {len(results)}")
 
     print(f"[+] Repositorios testados no total: {repos_testados}")
 
-    print(f"[+] Arquivo de resultados: {OUTPUT_CSV}")
+    print(f"{'='*70}")
 
-    print(f"[+] CK Outputs preservados em: {TEMP_DIR}/ck_output_*")
+    if results:
+
+        analyzer.save_to_csv(results, OUTPUT_CSV)
+
+        analyzer.calculate_statistics(results)
+
+    end_time = time.time()
+
+    total_execution_time = end_time - start_time
 
     print(f"\n[TEMPO TOTAL DE EXECUÇÃO] {format_time(total_execution_time)}")
 
     print(f"[TEMPO] Fim da execução: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-
-    print(f"\n[REFERENCIA ACADEMICA]")
-
-    print(f"   Mamun et al. (2019): Evolution of Technical Debt")
-
-    print(f"   - Criterio de projeto: Mínimo de 4.000 LOC")
 
     print(f"{'='*70}\n")
 
