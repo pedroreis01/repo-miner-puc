@@ -105,7 +105,7 @@ TEMP_DIR = "temp_repos"
 # ============================================================================
 # VARIAVEIS DE FILTRO - BASEADAS NO ARTIGO ACADEMIC
 # ============================================================================
-NUM_REPOS_VALIDOS = 4        # Numero de repositorios VALIDOS a serem analisados
+NUM_REPOS_VALIDOS = 100        # Numero de repositorios VALIDOS a serem analisados
 MIN_JAVA_FILES = 10          # Minimo de arquivos Java
 MIN_BUGS = 5                 # Minimo de bugs (repo so e valido se bugs > MIN_BUGS)
 MIN_LOC = 4000               # Mínimo de linhas de código (baseado no artigo)
