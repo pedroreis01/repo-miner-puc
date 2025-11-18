@@ -105,10 +105,10 @@ TEMP_DIR = "temp_repos"
 # ============================================================================
 # VARIAVEIS DE FILTRO - BASEADAS NO ARTIGO ACADEMIC
 # ============================================================================
-NUM_REPOS_VALIDOS = 100        # Numero de repositorios VALIDOS a serem analisados
-MIN_JAVA_FILES = 10          # Minimo de arquivos Java
-MIN_BUGS = 5                 # Minimo de bugs (repo so e valido se bugs > MIN_BUGS)
-MIN_LOC = 4000               # Mínimo de linhas de código (baseado no artigo)
+NUM_REPOS_VALIDOS = 520       # Numero de repositorios VALIDOS a serem analisados
+MIN_JAVA_FILES = 5          # Minimo de arquivos Java
+MIN_BUGS = -1                 # Minimo de bugs (repo so e valido se bugs > MIN_BUGS)
+MIN_LOC = 2000               # Mínimo de linhas de código (baseado no artigo)
 
 # ============================================================================
 # NOVO: CONFIGURAÇÕES DE PAGINAÇÃO
@@ -330,17 +330,12 @@ class GitHubAnalyzer:
             url = f"{GITHUB_API_URL}/search/repositories"
 
             params = {
-
-                "q": "language:java stars:>1000",
-
+                # Spring Boot: topic e termos no readme/description; ainda em Java e ordenado por stars
+                "q": 'language:java stars:>10 (topic:spring-boot OR "spring-boot" in:readme,description)',
                 "sort": "stars",
-
                 "order": "desc",
-
                 "per_page": REPOS_PER_PAGE,
-
-                "page": page,  # NOVO: Parâmetro de página
-
+                "page": page,
             }
 
             try:
@@ -530,11 +525,146 @@ class GitHubAnalyzer:
 
             return False
 
-    def clone_repo_with_retry(self, repo_url: str, target_dir: str) -> bool:
+    def download_repo_zip(self, repo_name: str, target_dir: str) -> bool:
 
         """
-        Clona repositorio com retry, SEM fallback para ZIP
-        Tenta clonar 2 vezes antes de desistir
+        Faz download do repositorio como ZIP do GitHub
+        Tenta diferentes branches (main, master, default)
+        """
+
+        owner, repo = repo_name.split("/")
+
+        branches_to_try = ["main", "master", "HEAD"]
+
+        for branch in branches_to_try:
+
+            try:
+
+                if branch == "HEAD":
+
+                    # Tenta obter o branch padrão via API
+
+                    api_url = f"{GITHUB_API_URL}/repos/{owner}/{repo}"
+
+                    response = self.session.get(api_url)
+
+                    if response.status_code == 200:
+
+                        default_branch = response.json().get("default_branch", "main")
+
+                        zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/{default_branch}.zip"
+
+                    else:
+
+                        continue
+
+                else:
+
+                    zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
+
+                print(f"   [*] Tentando baixar ZIP do branch '{branch}'...")
+
+                response = requests.get(zip_url, stream=True, timeout=300)
+
+                if response.status_code == 200:
+
+                    print(f"   [*] Download do ZIP iniciado...")
+
+                    zip_data = io.BytesIO()
+
+                    total_size = 0
+
+                    for chunk in response.iter_content(chunk_size=8192):
+
+                        if chunk:
+
+                            zip_data.write(chunk)
+
+                            total_size += len(chunk)
+
+                    print(f"   [*] ZIP baixado ({total_size / 1024 / 1024:.2f} MB). Extraindo...")
+
+                    # Garante que o diretorio pai existe
+
+                    parent_dir = os.path.dirname(target_dir)
+
+                    os.makedirs(parent_dir, exist_ok=True)
+
+                    # Extrai o ZIP
+
+                    with zipfile.ZipFile(zip_data) as zip_ref:
+
+                        zip_ref.extractall(parent_dir)
+
+                    # O ZIP extrai para uma pasta com nome repo-branch
+
+                    # Precisamos renomear para target_dir
+
+                    extracted_dirs = [
+
+                        d for d in Path(parent_dir).iterdir()
+
+                        if d.is_dir() and d.name.startswith(f"{repo}-")
+
+                    ]
+
+                    if extracted_dirs:
+
+                        extracted_path = extracted_dirs[0]
+
+                        if os.path.exists(target_dir):
+
+                            safe_rmtree(target_dir)
+
+                        os.rename(str(extracted_path), target_dir)
+
+                        print(f"   [+] Repositorio baixado e extraido com sucesso (ZIP)")
+
+                        return True
+
+                    else:
+
+                        print(f"   [!] Nao foi possivel encontrar pasta extraida")
+
+                elif response.status_code == 404:
+
+                    print(f"   [!] Branch '{branch}' nao encontrado (404)")
+
+                    continue
+
+                else:
+
+                    print(f"   [!] Erro HTTP {response.status_code} ao baixar ZIP do branch '{branch}'")
+
+                    continue
+
+            except requests.exceptions.Timeout:
+
+                print(f"   [!] Timeout ao baixar ZIP do branch '{branch}'")
+
+                continue
+
+            except zipfile.BadZipFile:
+
+                print(f"   [!] Arquivo ZIP corrompido do branch '{branch}'")
+
+                continue
+
+            except Exception as e:
+
+                print(f"   [!] Erro ao baixar ZIP do branch '{branch}': {e}")
+
+                continue
+
+        print(f"   [-] FALHA: Nao foi possivel baixar o repositorio como ZIP")
+
+        return False
+
+    def clone_repo_with_retry(self, repo_url: str, target_dir: str, repo_name: str = None) -> bool:
+
+        """
+        Clona repositorio com retry, COM fallback para ZIP
+        Tenta clonar 2 vezes antes de tentar download ZIP
         """
 
         print(f"   [*] Clonando repositorio (tentativa 1/2)...")
@@ -544,6 +674,14 @@ class GitHubAnalyzer:
         if not shutil.which("git"):
 
             print("   [-] Git nao esta instalado ou nao esta no PATH")
+
+            # Se nao tem git, tenta ZIP direto
+
+            if repo_name:
+
+                print(f"   [*] Tentando download ZIP como alternativa...")
+
+                return self.download_repo_zip(repo_name, target_dir)
 
             return False
 
@@ -622,6 +760,14 @@ class GitHubAnalyzer:
             print(f"   [!] Erro na tentativa 2: {e}")
 
         print(f"   [-] FALHA: Nao foi possivel clonar o repositorio apos 2 tentativas")
+
+        # NOVO: Tenta download ZIP como fallback
+
+        if repo_name:
+
+            print(f"   [*] Tentando download ZIP como alternativa...")
+
+            return self.download_repo_zip(repo_name, target_dir)
 
         return False
 
@@ -820,6 +966,8 @@ class GitHubAnalyzer:
             "avg_loops": 0.0,
 
             "avg_comparisons": 0.0,
+            "avg_dit": 0.0,
+            "avg_noc": 0.0,
 
         }
 
@@ -845,6 +993,9 @@ class GitHubAnalyzer:
 
                     total_tcc = 0
 
+                    total_dit = 0.0
+                    total_noc = 0.0
+
                     for row in reader:
 
                         metrics["total_classes"] += 1
@@ -858,6 +1009,9 @@ class GitHubAnalyzer:
                         total_rfc += float(row.get("rfc", 0) or 0)
 
                         total_lcom += float(row.get("lcom", 0) or 0)
+
+                        total_dit += float(row.get("dit", 0) or 0)
+                        total_noc += float(row.get("noc", 0) or 0)
 
                         tcc_val = row.get("tcc", "")
 
@@ -886,6 +1040,9 @@ class GitHubAnalyzer:
                         metrics["avg_lcom"] = total_lcom / n
 
                         metrics["avg_tcc"] = total_tcc / n if total_tcc > 0 else 0
+
+                        metrics["avg_dit"] = total_dit / n
+                        metrics["avg_noc"] = total_noc / n
 
             # Analise de metodos
 
@@ -1097,15 +1254,15 @@ class GitHubAnalyzer:
 
             print(f"   [+] PASSOU no filtro de bugs: {result['total_bugs']} > {MIN_BUGS}")
 
-            # 2. Clona repositorio COM RETRY (sem fallback para ZIP)
+            # 2. Clona repositorio COM RETRY (com fallback para ZIP)
 
             repo_dir = os.path.join(TEMP_DIR, repo_name.replace("/", "_"))
 
             os.makedirs(TEMP_DIR, exist_ok=True)
 
-            if not self.clone_repo_with_retry(repo_info["clone_url"], repo_dir):
+            if not self.clone_repo_with_retry(repo_info["clone_url"], repo_dir, repo_name):
 
-                print(f"   [!] Nao foi possivel clonar o repositorio. Pulando para o proximo...")
+                print(f"   [!] Nao foi possivel clonar ou baixar o repositorio. Pulando para o proximo...")
 
                 return result
 
@@ -1171,6 +1328,10 @@ class GitHubAnalyzer:
 
                 result["total_classes"] = metrics["total_classes"]
 
+                result["bugs_per_class"] = round(
+                    result["total_bugs"] / max(result["total_classes"], 1), 3
+                )
+
                 result["total_methods"] = metrics["total_methods"]
 
                 result["avg_wmc"] = round(metrics["avg_wmc"], 2)
@@ -1186,6 +1347,9 @@ class GitHubAnalyzer:
                 result["avg_loops"] = round(metrics["avg_loops"], 2)
 
                 result["avg_comparisons"] = round(metrics["avg_comparisons"], 2)
+
+                result["avg_dit"] = round(metrics["avg_dit"], 2)
+                result["avg_noc"] = round(metrics["avg_noc"], 2)
 
                 # 6. Analise de duplicacao
 
@@ -1274,43 +1438,29 @@ class GitHubAnalyzer:
         fieldnames = [
 
             "repository",
-
             "stars",
-
             "url",
-
             "total_bugs",
-
+            # NOVO:
+            "bugs_per_class",
             "total_java_files",
-
             "total_loc",
-
             "total_classes",
-
             "total_methods",
-
             "avg_wmc",
-
             "avg_cbo",
-
             "avg_rfc",
-
+            # NOVO:
+            "avg_dit",
+            "avg_noc",
             "avg_wmc_method",
-
             "avg_loc_method",
-
             "avg_loops",
-
             "avg_comparisons",
-
             "code_duplication_percent",
-
             "maintainability_index",
-
             "ck_output_dir",
-
             "analysis_time_seconds",
-
             "analysis_date",
 
         ]
@@ -1591,6 +1741,10 @@ def main():
     print(f"\n[TEMPO TOTAL DE EXECUÇÃO] {format_time(total_execution_time)}")
 
     print(f"[TEMPO] Fim da execução: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+
+    print(f"      - DIT médio: {result.get('avg_dit', 0.0)}")
+    print(f"      - NOC médio: {result.get('avg_noc', 0.0)}")
+    print(f"      - Bugs/Classe: {result.get('bugs_per_class', 0.0)}")
 
     print(f"{'='*70}\n")
 
